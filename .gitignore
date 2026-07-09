@@ -3,3 +3,5 @@ target/
 .idea/
 .vscode/
 .mvn/
+fc-deploy/
+fc-deploy.zip
