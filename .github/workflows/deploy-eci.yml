@@ -92,12 +92,17 @@ jobs:
 
       - name: Create ECI
         run: |
+          # Memory/CPU constrained to 512MB/1.0 because cn-hangzhou-f (the
+          # only zone this VPC's VSwitch is in) is currently out of stock
+          # for ≥1024MB ECI resource classes. To use more, add a second
+          # VSwitch in another zone and pass both IDs to --vswitch-id;
+          # ECI will then multi-zone schedule.
           IMAGE="${{ env.IMAGE_NAME }}:sha-${{ github.sha }}"
           CONTAINER=$(cat <<EOF
           [{
             "Name":"$CONTAINER_NAME",
             "Image":"$IMAGE",
-            "Memory":2048.0,
+            "Memory":512.0,
             "Cpu":1.0,
             "Port":[{"Port":8080,"Protocol":"TCP"}]
           }]
