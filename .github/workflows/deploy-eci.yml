@@ -1,0 +1,144 @@
+name: Build & Deploy to ECI
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  deploy-eci:
+    runs-on: ubuntu-latest
+    env:
+      REGION: cn-hangzhou
+      CONTAINER_GROUP_NAME: spring-demo-eci
+      CONTAINER_NAME: spring-demo
+      IMAGE_NAME: ghcr.io/${{ github.repository }}
+      VSWITCH_ID: vsw-bp1v4f5qn6pi4g1inn85z
+      SECURITY_GROUP_ID: sg-bp1fyc1lq2nbzqo2xtxt
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to ghcr.io
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build & push image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: |
+            ${{ env.IMAGE_NAME }}:sha-${{ github.sha }}
+            ${{ env.IMAGE_NAME }}:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Install aliyun CLI
+        env:
+          ALIYUN_CLI_VERSION: 3.4.5
+        run: |
+          set -e
+          URL="https://github.com/aliyun/aliyun-cli/releases/download/v${ALIYUN_CLI_VERSION}/aliyun-cli-linux-${ALIYUN_CLI_VERSION}-amd64.tgz"
+          curl -fsSL --retry 3 -o /tmp/aliyun.tgz "$URL"
+          tar -xzf /tmp/aliyun.tgz -C /tmp/
+          install /tmp/aliyun /usr/local/bin/aliyun
+          aliyun --version
+
+      - name: Install aliyun-cli-eci plugin
+        run: aliyun plugin install --name aliyun-cli-eci
+
+      - name: Configure aliyun CLI
+        env:
+          ALIYUN_AK: ${{ secrets.ALIYUN_ACCESS_KEY_ID }}
+          ALIYUN_SK: ${{ secrets.ALIYUN_ACCESS_KEY_SECRET }}
+        run: |
+          aliyun configure set \
+            --mode AK --region "$REGION" \
+            --access-key-id "$ALIYUN_AK" \
+            --access-key-secret "$ALIYUN_SK"
+
+      - name: Delete any previous ECI with this name
+        run: |
+          IDS=$(aliyun eci describe-container-groups \
+            --biz-region-id "$REGION" \
+            --container-group-name "$CONTAINER_GROUP_NAME" \
+            --limit 20 \
+            --output json 2>&1 \
+            | jq -r '.ContainerGroup[]?.ContainerGroupId')
+          for id in $IDS; do
+            [ -z "$id" ] && continue
+            echo "Deleting existing ECI $id"
+            aliyun eci delete-container-group \
+              --biz-region-id "$REGION" \
+              --container-group-id "$id" \
+              --biz-force true || true
+          done
+
+      - name: Create ECI
+        run: |
+          IMAGE="${{ env.IMAGE_NAME }}:sha-${{ github.sha }}"
+          CONTAINER=$(cat <<EOF
+          [{
+            "Name":"$CONTAINER_NAME",
+            "Image":"$IMAGE",
+            "Memory":2048.0,
+            "Cpu":1.0,
+            "Port":[{"Port":8080,"Protocol":"TCP"}]
+          }]
+          EOF
+          )
+          aliyun eci create-container-group \
+            --biz-region-id "$REGION" \
+            --container-group-name "$CONTAINER_GROUP_NAME" \
+            --container "$CONTAINER" \
+            --vswitch-id "$VSWITCH_ID" \
+            --security-group-id "$SECURITY_GROUP_ID" \
+            --auto-create-eip true \
+            --eip-bandwidth 5 \
+            --eip-isp BGP \
+            --restart-policy Always
+
+      - name: Wait for Running and smoke test
+        run: |
+          IP=""
+          for i in $(seq 1 60); do
+            RESP=$(aliyun eci describe-container-groups \
+              --biz-region-id "$REGION" \
+              --container-group-name "$CONTAINER_GROUP_NAME" \
+              --output json 2>&1)
+            STATUS=$(echo "$RESP" | jq -r '.ContainerGroup[0].Status // empty' 2>/dev/null)
+            IP=$(echo "$RESP" | jq -r '.ContainerGroup[0].InternetIp // empty' 2>/dev/null)
+            echo "[$((i*10))s] status=$STATUS ip=$IP"
+            if [ "$STATUS" = "Running" ] && [ -n "$IP" ]; then
+              break
+            fi
+            sleep 10
+          done
+          if [ -z "$IP" ]; then
+            echo "ECI never got an EIP; last response:"
+            echo "$RESP"
+            exit 1
+          fi
+          echo "ECI $CONTAINER_GROUP_NAME is Running at http://$IP:8080"
+          echo "==="
+          curl -sS -w "\nHTTP=%{http_code} time=%{time_total}s\n" \
+            "http://$IP:8080/" --max-time 30 || true
+          curl -sS -w "\nHTTP=%{http_code} time=%{time_total}s\n" \
+            "http://$IP:8080/hello?name=eci-github-actions" --max-time 30 || true
