@@ -79,9 +79,8 @@ jobs:
           IDS=$(aliyun eci describe-container-groups \
             --biz-region-id "$REGION" \
             --container-group-name "$CONTAINER_GROUP_NAME" \
-            --limit 20 \
-            --output json 2>&1 \
-            | jq -r '.ContainerGroup[]?.ContainerGroupId')
+            --limit 20 2>/dev/null \
+            | jq -r '.ContainerGroups[]?.ContainerGroupId // empty')
           for id in $IDS; do
             [ -z "$id" ] && continue
             echo "Deleting existing ECI $id"
@@ -121,10 +120,9 @@ jobs:
           for i in $(seq 1 60); do
             RESP=$(aliyun eci describe-container-groups \
               --biz-region-id "$REGION" \
-              --container-group-name "$CONTAINER_GROUP_NAME" \
-              --output json 2>&1)
-            STATUS=$(echo "$RESP" | jq -r '.ContainerGroup[0].Status // empty' 2>/dev/null)
-            IP=$(echo "$RESP" | jq -r '.ContainerGroup[0].InternetIp // empty' 2>/dev/null)
+              --container-group-name "$CONTAINER_GROUP_NAME" 2>/dev/null)
+            STATUS=$(echo "$RESP" | jq -r '.ContainerGroups[0].Status // empty' 2>/dev/null)
+            IP=$(echo "$RESP" | jq -r '.ContainerGroups[0].InternetIp // empty' 2>/dev/null)
             echo "[$((i*10))s] status=$STATUS ip=$IP"
             if [ "$STATUS" = "Running" ] && [ -n "$IP" ]; then
               break
