@@ -61,8 +61,13 @@ jobs:
           ALIYUN_CLI_VERSION: 3.4.5
         run: |
           set -e
-          curl -fsSL -o /tmp/aliyun.tgz \
-            "https://gh-proxy.com/https://github.com/aliyun/aliyun-cli/releases/download/v${ALIYUN_CLI_VERSION}/aliyun-cli-linux-${ALIYUN_CLI_VERSION}-amd64.tgz"
+          URL="https://github.com/aliyun/aliyun-cli/releases/download/v${ALIYUN_CLI_VERSION}/aliyun-cli-linux-${ALIYUN_CLI_VERSION}-amd64.tgz"
+          echo "Downloading $URL"
+          if ! curl -fsSL --retry 3 -o /tmp/aliyun.tgz "$URL"; then
+            echo "Direct GitHub failed, falling back to gh-proxy.com"
+            curl -fsSL --retry 3 -o /tmp/aliyun.tgz \
+              "https://gh-proxy.com/$URL"
+          fi
           tar -xzf /tmp/aliyun.tgz -C /tmp/
           install /tmp/aliyun /usr/local/bin/aliyun
           aliyun --version
