@@ -16,6 +16,11 @@ jobs:
       REGION: cn-hangzhou
       FUNCTION_NAME: spring-demo
       IMAGE_NAME: ghcr.io/${{ github.repository }}
+      MEMORY_MB: '1024'
+      CPU: '1.0'
+      DISK_MB: '512'
+      TIMEOUT_S: '60'
+      CONCURRENCY: '1'
 
     steps:
       - uses: actions/checkout@v4
@@ -76,11 +81,34 @@ jobs:
             --access-key-id "$ALIYUN_AK" \
             --access-key-secret "$ALIYUN_SK"
 
-      - name: Update FC3 function (custom-container image)
+      - name: Sync FC3 function (create on first run, update thereafter)
         run: |
+          set -e
           IMAGE="${{ env.IMAGE_NAME }}:sha-${{ github.sha }}"
-          CONFIG="{\"image\":\"${IMAGE}\",\"port\":8080}"
-          aliyun fc update-function \
+          CONFIG="{\"image\":\"${IMAGE}\",\"port\":8080,\"accelerationType\":\"None\"}"
+
+          echo "::group::Try create-function"
+          CREATE_OUT=$(aliyun fc create-function \
             --region "$REGION" \
             --function-name "$FUNCTION_NAME" \
-            --custom-container-config "$CONFIG"
+            --runtime custom-container \
+            --handler "main" \
+            --custom-container-config "$CONFIG" \
+            --memory-size "$MEMORY_MB" \
+            --cpu "$CPU" \
+            --disk-size "$DISK_MB" \
+            --timeout "$TIMEOUT_S" \
+            --instance-concurrency "$CONCURRENCY" 2>&1) || CREATE_OUT+=" (exit=$?)"
+          echo "$CREATE_OUT"
+
+          if echo "$CREATE_OUT" | grep -qiE "already exists|FunctionAlreadyExists|InvalidArgument.*already"; then
+            echo "::group::Function exists; running update-function"
+            aliyun fc update-function \
+              --region "$REGION" \
+              --function-name "$FUNCTION_NAME" \
+              --custom-container-config "$CONFIG"
+            echo "::endgroup::"
+          else
+            echo "Function created (or non-conflict response)."
+          fi
+          echo "::endgroup::"
