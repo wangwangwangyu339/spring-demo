@@ -1,0 +1,12 @@
+target/
+*.iml
+.idea/
+.vscode/
+.mvn/
+fc-deploy/
+fc-deploy.zip
+.git/
+.gitignore
+.dockerignore
+.github/
+README.md
