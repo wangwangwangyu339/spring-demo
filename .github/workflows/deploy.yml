@@ -73,7 +73,7 @@ jobs:
           aliyun --version
 
       - name: Install aliyun-cli-fc plugin
-        run: aliyun plugin install aliyun-cli-fc
+        run: aliyun plugin install --name aliyun-cli-fc --version 0.5.1
 
       - name: Configure aliyun CLI (non-interactive)
         env:
