@@ -97,6 +97,12 @@ jobs:
           # for ≥1024MB ECI resource classes. To use more, add a second
           # VSwitch in another zone and pass both IDs to --vswitch-id;
           # ECI will then multi-zone schedule.
+          #
+          # compute-category=economy is critical: the default general-purpose
+          # category rounds a 1 vCPU / 512 MB request up to a 64 vCPU /
+          # 512 MB instance (~¥22/hr), which surprised the first deploy
+          # with a ¥110 bill. economy has real 1 vCPU instance types
+          # (~¥0.05/hr).
           IMAGE="${{ env.IMAGE_NAME }}:sha-${{ github.sha }}"
           CONTAINER=$(cat <<EOF
           [{
@@ -111,13 +117,14 @@ jobs:
           aliyun eci create-container-group \
             --biz-region-id "$REGION" \
             --container-group-name "$CONTAINER_GROUP_NAME" \
+            --compute-category economy \
             --container "$CONTAINER" \
             --vswitch-id "$VSWITCH_ID" \
             --security-group-id "$SECURITY_GROUP_ID" \
             --auto-create-eip true \
             --eip-bandwidth 5 \
             --eip-isp BGP \
-            --restart-policy Always
+            --restart-policy OnFailure
 
       - name: Wait for Running and smoke test
         run: |
@@ -145,3 +152,27 @@ jobs:
             "http://$IP:8080/" --max-time 30 || true
           curl -sS -w "\nHTTP=%{http_code} time=%{time_total}s\n" \
             "http://$IP:8080/hello?name=eci-github-actions" --max-time 30 || true
+
+      - name: Clean up ECI to stop billing
+        if: always()
+        run: |
+          # Always delete the ECI after the workflow finishes, including
+          # on failure — otherwise restart-policy=OnFailure won't restart
+          # it (since smoke test always exits 0 via || true), and the
+          # ECI would sit Running, racking up cost until manual cleanup.
+          # OnFailure keeps the container alive if Spring Boot crashes,
+          # which is the right CI behavior; cleanup here guarantees
+          # we never leave a paid instance running between deploys.
+          IDS=$(aliyun eci describe-container-groups \
+            --biz-region-id "$REGION" \
+            --container-group-name "$CONTAINER_GROUP_NAME" \
+            --limit 20 2>/dev/null \
+            | jq -r '.ContainerGroups[]?.ContainerGroupId // empty')
+          for id in $IDS; do
+            [ -z "$id" ] && continue
+            echo "Deleting ECI $id"
+            aliyun eci delete-container-group \
+              --biz-region-id "$REGION" \
+              --container-group-id "$id" \
+              --biz-force true || true
+          done
