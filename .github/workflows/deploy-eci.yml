@@ -188,20 +188,74 @@ jobs:
           STATUS="${{ job.status }}"
           ECI_IP="${ECI_IP:-n/a}"
           case "$STATUS" in
-            success)   EMOJI="✅";;
-            failure)   EMOJI="❌";;
-            cancelled) EMOJI="⚠️";;
-            *)         EMOJI="ℹ️";;
+            success)   EMOJI="✅"; COLOR="green";;
+            failure)   EMOJI="❌"; COLOR="red";;
+            cancelled) EMOJI="⚠️"; COLOR="yellow";;
+            *)         EMOJI="ℹ️"; COLOR="blue";;
           esac
-          MSG="$EMOJI Deploy $STATUS | ${{ github.ref_name }}@${GITHUB_SHA:0:7} | http://$ECI_IP:8080"
+          BRANCH="${{ github.ref_name }}"
+          SHA="${GITHUB_SHA:0:7}"
+          REPO="${{ github.repository }}"
+          RUN_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          COMMIT_URL="${{ github.server_url }}/${{ github.repository }}/commit/${GITHUB_SHA}"
           TOKEN=$(curl -sS -X POST https://open.feishu.cn/open-apis/auth/v3/tenant_access_token/internal \
             -H "Content-Type: application/json" \
             -d "{\"app_id\":\"$LARK_APP_ID\",\"app_secret\":\"$LARK_APP_SECRET\"}" \
             | jq -r '.tenant_access_token')
+          CARD=$(jq -n \
+            --arg title "$EMOJI Deploy $STATUS" \
+            --arg color "$COLOR" \
+            --arg branch "$BRANCH" \
+            --arg sha "$SHA" \
+            --arg ip "$ECI_IP" \
+            --arg repo "$REPO" \
+            --arg run_url "$RUN_URL" \
+            --arg commit_url "$COMMIT_URL" \
+            '{
+              header: {
+                title: { tag: "plain_text", content: $title },
+                template: $color
+              },
+              elements: [
+                {
+                  tag: "div",
+                  fields: [
+                    { is_short: true, text: { tag: "lark_md", content: ("**Branch**\n" + $branch) } },
+                    { is_short: true, text: { tag: "lark_md", content: ("**Commit**\n" + $sha) } },
+                    { is_short: true, text: { tag: "lark_md", content: ("**ECI IP**\n" + $ip) } },
+                    { is_short: true, text: { tag: "lark_md", content: ("**Repo**\n" + $repo) } }
+                  ]
+                },
+                { tag: "hr" },
+                {
+                  tag: "note",
+                  elements: [
+                    { tag: "plain_text", content: "ECI auto-cleaned after notification" }
+                  ]
+                },
+                {
+                  tag: "action",
+                  actions: [
+                    {
+                      tag: "button",
+                      text: { tag: "plain_text", content: "View Run" },
+                      type: "primary",
+                      url: $run_url
+                    },
+                    {
+                      tag: "button",
+                      text: { tag: "plain_text", content: "View Commit" },
+                      type: "default",
+                      url: $commit_url
+                    }
+                  ]
+                }
+              ]
+            }')
           jq -n \
             --arg rid "$USER_OPEN_ID" \
-            --arg content "$(jq -nc --arg t "$MSG" '{text: $t}')" \
-            '{receive_id: $rid, msg_type: "text", content: $content}' > /tmp/dm.json
+            --arg content "$CARD" \
+            '{receive_id: $rid, msg_type: "interactive", content: $content}' > /tmp/dm.json
           curl -sS -X POST "https://open.feishu.cn/open-apis/im/v1/messages?receive_id_type=open_id" \
             -H "Authorization: Bearer $TOKEN" \
             -H "Content-Type: application/json; charset=utf-8" \
