@@ -152,6 +152,7 @@ jobs:
             "http://$IP:8080/" --max-time 30 || true
           curl -sS -w "\nHTTP=%{http_code} time=%{time_total}s\n" \
             "http://$IP:8080/hello?name=eci-github-actions" --max-time 30 || true
+          echo "ECI_IP=$IP" >> "$GITHUB_ENV"
 
       - name: Clean up ECI to stop billing
         if: always()
@@ -176,3 +177,32 @@ jobs:
               --container-group-id "$id" \
               --biz-force true || true
           done
+
+      - name: Notify Feishu
+        if: always()
+        env:
+          LARK_APP_ID: ${{ secrets.LARK_APP_ID }}
+          LARK_APP_SECRET: ${{ secrets.LARK_APP_SECRET }}
+          USER_OPEN_ID: ou_f8675844154852c40483c959cc3d68d1
+        run: |
+          STATUS="${{ job.status }}"
+          ECI_IP="${ECI_IP:-n/a}"
+          case "$STATUS" in
+            success)   EMOJI="✅";;
+            failure)   EMOJI="❌";;
+            cancelled) EMOJI="⚠️";;
+            *)         EMOJI="ℹ️";;
+          esac
+          MSG="$EMOJI Deploy $STATUS | ${{ github.ref_name }}@${GITHUB_SHA:0:7} | http://$ECI_IP:8080"
+          TOKEN=$(curl -sS -X POST https://open.feishu.cn/open-apis/auth/v3/tenant_access_token/internal \
+            -H "Content-Type: application/json" \
+            -d "{\"app_id\":\"$LARK_APP_ID\",\"app_secret\":\"$LARK_APP_SECRET\"}" \
+            | jq -r '.tenant_access_token')
+          jq -n \
+            --arg rid "$USER_OPEN_ID" \
+            --arg content "$(jq -nc --arg t "$MSG" '{text: $t}')" \
+            '{receive_id: $rid, msg_type: "text", content: $content}' > /tmp/dm.json
+          curl -sS -X POST "https://open.feishu.cn/open-apis/im/v1/messages?receive_id_type=open_id" \
+            -H "Authorization: Bearer $TOKEN" \
+            -H "Content-Type: application/json; charset=utf-8" \
+            --data-binary @/tmp/dm.json
